@@ -1,0 +1,5 @@
+{
+  "name": "Copy of Warehouse AI Reporter",
+  "description": "Интеллектуальная система генерации складских отчетов с аналитикой Gemini AI. Выбор отчетов через карточки, визуализация данных и прогнозы.",
+  "requestFramePermissions": []
+}
