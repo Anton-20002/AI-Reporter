@@ -1,436 +1,266 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { 
-  BarChart3, 
-  Package, 
-  AlertTriangle, 
-  TrendingUp, 
-  Activity, 
-  ArrowLeft,
-  Calendar,
-  Download,
-  Share2,
-  Sparkles,
-  Search,
-  Box
-} from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { createItem, getItems, postMovement } from './services/warehouseApi';
 
-import { ReportType, ReportConfig, ReportData, InventoryItem, AIAnalysisResult } from './types';
-import { analyzeReportWithGemini } from './services/geminiService';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter, Button, Badge } from './components/ui';
-import { CategoryValueChart, StatusDistributionChart } from './components/DataCharts';
+export type StockStatus = 'OK' | 'LOW' | 'OUT';
 
-// --- Configuration ---
+export interface WarehouseItem {
+  id: string;
+  sku: string;
+  name: string;
+  category: string;
+  quantity: number;
+  minThreshold: number;
+  location: string;
+  updatedAt: string;
+}
 
-const REPORT_TYPES: ReportConfig[] = [
-  {
-    id: ReportType.INVENTORY_BALANCE,
-    title: "Остатки на складе",
-    description: "Текущее количество и стоимость запасов по всем категориям.",
-    iconName: 'Package',
-    color: 'bg-blue-500'
-  },
-  {
-    id: ReportType.MOVEMENT_HISTORY,
-    title: "История движения",
-    description: "Анализ поступлений и отгрузок за выбранный период.",
-    iconName: 'Activity',
-    color: 'bg-indigo-500'
-  },
-  {
-    id: ReportType.EXPIRY_RISK,
-    title: "Сроки годности",
-    description: "Товары с истекающим сроком годности и просрочка.",
-    iconName: 'AlertTriangle',
-    color: 'bg-orange-500'
-  },
-  {
-    id: ReportType.DEMAND_FORECAST,
-    title: "Прогноз спроса",
-    description: "AI-прогноз потребности в товарах на следующий месяц.",
-    iconName: 'TrendingUp',
-    color: 'bg-emerald-500'
-  },
-];
-
-// --- Mock Data Generator ---
-
-const generateMockData = (type: ReportType): ReportData => {
-  const categories = ['Электроника', 'Запчасти', 'Инструменты', 'Сырье', 'Упаковка'];
-  const items: InventoryItem[] = Array.from({ length: 25 }).map((_, i) => {
-    const qty = Math.floor(Math.random() * 500);
-    let status: InventoryItem['status'] = 'In Stock';
-    if (qty === 0) status = 'Out of Stock';
-    else if (qty < 20) status = 'Low Stock';
-    else if (qty > 400) status = 'Overstock';
-
-    return {
-      id: `ITEM-${1000 + i}`,
-      name: `Товар ${i + 1} (${categories[Math.floor(Math.random() * categories.length)]})`,
-      sku: `SKU-${Math.random().toString(36).substring(7).toUpperCase()}`,
-      quantity: qty,
-      category: categories[Math.floor(Math.random() * categories.length)],
-      lastUpdated: new Date().toISOString().split('T')[0],
-      status,
-      value: Math.floor(Math.random() * 1000) * qty,
-    };
-  });
-
-  // Tweak data based on report type to make it realistic
-  if (type === ReportType.EXPIRY_RISK) {
-    items.forEach(item => {
-      if (Math.random() > 0.7) item.status = 'Low Stock'; // Simulate risk
-    });
-  }
-
-  return {
-    generatedAt: new Date().toLocaleString('ru-RU'),
-    items,
-    summary: {
-      totalItems: items.length,
-      totalValue: items.reduce((sum, i) => sum + i.value, 0),
-      criticalItemsCount: items.filter(i => i.status === 'Low Stock' || i.status === 'Out of Stock').length
-    }
-  };
+const statusLabel: Record<StockStatus, string> = {
+  OK: 'В наличии',
+  LOW: 'Низкий остаток',
+  OUT: 'Нет в наличии'
 };
 
-// --- Icon Helper ---
-const ReportIcon = ({ name, className = "" }: { name: string, className?: string }) => {
-  switch (name) {
-    case 'Package': return <Package className={className} />;
-    case 'Activity': return <Activity className={className} />;
-    case 'AlertTriangle': return <AlertTriangle className={className} />;
-    case 'TrendingUp': return <TrendingUp className={className} />;
-    default: return <BarChart3 className={className} />;
-  }
+const getStatus = (item: WarehouseItem): StockStatus => {
+  if (item.quantity <= 0) return 'OUT';
+  if (item.quantity <= item.minThreshold) return 'LOW';
+  return 'OK';
 };
-
-// --- Main App Component ---
 
 const App: React.FC = () => {
-  const [selectedReport, setSelectedReport] = useState<ReportConfig | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [reportData, setReportData] = useState<ReportData | null>(null);
-  const [aiAnalysis, setAiAnalysis] = useState<AIAnalysisResult | null>(null);
+  const [items, setItems] = useState<WarehouseItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>('');
+  const [search, setSearch] = useState('');
 
-  // Reset data when switching reports
-  useEffect(() => {
-    if (!selectedReport) {
-      setReportData(null);
-      setAiAnalysis(null);
-    }
-  }, [selectedReport]);
+  const [newItem, setNewItem] = useState({
+    sku: '',
+    name: '',
+    category: 'Электроника',
+    quantity: 0,
+    minThreshold: 10,
+    location: 'A-01'
+  });
 
-  const handleGenerateReport = useCallback(async () => {
-    if (!selectedReport) return;
+  const [movement, setMovement] = useState({
+    itemId: '',
+    delta: 0,
+    reason: 'Поступление'
+  });
 
-    setIsGenerating(true);
-    
-    // Simulate API delay
-    await new Promise(resolve => setTimeout(resolve, 800));
-    
-    // 1. Generate Mock Data
-    const data = generateMockData(selectedReport.id);
-    setReportData(data);
-
-    // 2. Call Gemini for Analysis
+  const loadItems = async () => {
     try {
-      const analysis = await analyzeReportWithGemini(selectedReport.id, data);
-      setAiAnalysis(analysis);
-    } catch (err) {
-      console.error("Failed to analyze", err);
+      setLoading(true);
+      setError('');
+      const data = await getItems();
+      setItems(data);
+      if (data.length && !movement.itemId) {
+        setMovement((prev) => ({ ...prev, itemId: data[0].id }));
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Не удалось загрузить товары');
     } finally {
-      setIsGenerating(false);
+      setLoading(false);
     }
-  }, [selectedReport]);
+  };
 
-  // --- Views ---
+  useEffect(() => {
+    loadItems();
+  }, []);
 
-  const renderDashboard = () => (
-    <div className="space-y-8">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight text-slate-900">Центр отчетов</h1>
-          <p className="text-slate-500 mt-2">Выберите тип отчета для генерации аналитики и статистики.</p>
-        </div>
-        <Button variant="outline">
-          <Calendar className="mr-2 h-4 w-4" />
-          Сегодня: {new Date().toLocaleDateString('ru-RU')}
-        </Button>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {REPORT_TYPES.map((report) => (
-          <Card 
-            key={report.id} 
-            onClick={() => setSelectedReport(report)}
-            className="group hover:-translate-y-1"
-          >
-            <CardHeader>
-              <div className={`w-12 h-12 rounded-lg ${report.color} flex items-center justify-center text-white mb-4 shadow-md group-hover:scale-110 transition-transform duration-200`}>
-                <ReportIcon name={report.iconName} className="h-6 w-6" />
-              </div>
-              <CardTitle>{report.title}</CardTitle>
-              <CardDescription className="mt-2">{report.description}</CardDescription>
-            </CardHeader>
-            <CardFooter>
-              <span className="text-sm font-medium text-blue-600 group-hover:underline flex items-center">
-                Создать отчет <ArrowLeft className="ml-1 h-3 w-3 rotate-180" />
-              </span>
-            </CardFooter>
-          </Card>
-        ))}
-      </div>
-
-      <div className="rounded-xl bg-slate-100 p-8 border border-slate-200 text-center">
-        <h3 className="text-lg font-semibold text-slate-800 mb-2">Не нашли нужный отчет?</h3>
-        <p className="text-slate-500 mb-6">Вы можете создать пользовательский отчет или запросить новые метрики у администратора.</p>
-        <Button variant="outline">Конструктор отчетов</Button>
-      </div>
-    </div>
+  const filteredItems = useMemo(
+    () =>
+      items.filter((item) => {
+        const text = `${item.name} ${item.sku} ${item.category}`.toLowerCase();
+        return text.includes(search.toLowerCase());
+      }),
+    [items, search]
   );
 
-  const renderReportView = () => {
-    if (!selectedReport) return null;
+  const totals = useMemo(() => {
+    const totalQty = items.reduce((sum, item) => sum + item.quantity, 0);
+    const lowCount = items.filter((item) => getStatus(item) === 'LOW').length;
+    const outCount = items.filter((item) => getStatus(item) === 'OUT').length;
+    return { totalQty, lowCount, outCount };
+  }, [items]);
 
-    return (
-      <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-        {/* Header Navigation */}
-        <div className="flex items-center space-x-4">
-          <Button variant="ghost" size="icon" onClick={() => setSelectedReport(null)}>
-            <ArrowLeft className="h-5 w-5" />
-          </Button>
-          <div className="flex items-center space-x-3">
-             <div className={`p-2 rounded-md ${selectedReport.color} text-white`}>
-                <ReportIcon name={selectedReport.iconName} className="h-5 w-5" />
-             </div>
-             <div>
-                <h2 className="text-2xl font-bold">{selectedReport.title}</h2>
-                <p className="text-slate-500 text-sm">Параметры генерации</p>
-             </div>
-          </div>
-        </div>
+  const handleCreateItem = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await createItem(newItem);
+    setNewItem({ ...newItem, sku: '', name: '', quantity: 0 });
+    await loadItems();
+  };
 
-        {/* Configuration & Action Area */}
-        {!reportData ? (
-          <Card className="max-w-2xl mx-auto mt-12">
-            <CardHeader>
-              <CardTitle>Настройки отчета</CardTitle>
-              <CardDescription>Настройте фильтры перед формированием данных.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Склад</label>
-                  <select className="flex h-10 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm ring-offset-white focus:outline-none focus:ring-2 focus:ring-slate-950">
-                    <option>Главный склад (Москва)</option>
-                    <option>Склад Север (СПБ)</option>
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Категория</label>
-                  <select className="flex h-10 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm ring-offset-white focus:outline-none focus:ring-2 focus:ring-slate-950">
-                    <option>Все категории</option>
-                    <option>Электроника</option>
-                    <option>Запчасти</option>
-                  </select>
-                </div>
-              </div>
-              <div className="p-4 bg-blue-50 text-blue-800 rounded-lg text-sm flex items-start gap-2">
-                <Sparkles className="h-5 w-5 shrink-0 text-blue-600" />
-                <p>При генерации будет задействован <strong>Gemini 2.5 AI</strong> для анализа аномалий и составления прогноза рисков на основе полученных данных.</p>
-              </div>
-            </CardContent>
-            <CardFooter className="justify-end">
-              <Button onClick={handleGenerateReport} loading={isGenerating} size="lg">
-                {isGenerating ? 'Анализ данных...' : 'Сформировать отчет'}
-              </Button>
-            </CardFooter>
-          </Card>
-        ) : (
-          <div className="space-y-6">
-            
-            {/* Top Stats Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <Card className="bg-white">
-                  <CardContent className="pt-6 flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-500">Всего позиций</p>
-                      <h3 className="text-3xl font-bold">{reportData.summary.totalItems}</h3>
-                    </div>
-                    <Box className="h-8 w-8 text-slate-400" />
-                  </CardContent>
-                </Card>
-                <Card className="bg-white">
-                  <CardContent className="pt-6 flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-500">Общая стоимость</p>
-                      <h3 className="text-3xl font-bold text-green-600">${reportData.summary.totalValue.toLocaleString()}</h3>
-                    </div>
-                    <TrendingUp className="h-8 w-8 text-green-500" />
-                  </CardContent>
-                </Card>
-                <Card className={`${reportData.summary.criticalItemsCount > 0 ? 'bg-red-50 border-red-100' : 'bg-white'}`}>
-                  <CardContent className="pt-6 flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-500">Требуют внимания</p>
-                      <h3 className={`text-3xl font-bold ${reportData.summary.criticalItemsCount > 0 ? 'text-red-600' : 'text-slate-900'}`}>
-                        {reportData.summary.criticalItemsCount}
-                      </h3>
-                    </div>
-                    <AlertTriangle className={`h-8 w-8 ${reportData.summary.criticalItemsCount > 0 ? 'text-red-500' : 'text-slate-400'}`} />
-                  </CardContent>
-                </Card>
-            </div>
-
-            {/* AI Insight Section */}
-            {aiAnalysis && (
-              <Card className="border-indigo-200 shadow-md overflow-hidden">
-                <div className="bg-gradient-to-r from-indigo-500 to-purple-600 p-4 text-white flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <Sparkles className="h-5 w-5" />
-                    <h3 className="font-semibold">AI Аналитика Gemini</h3>
-                  </div>
-                  <Badge className="bg-white/20 text-white border-none">
-                     Risk: {aiAnalysis.riskAssessment}
-                  </Badge>
-                </div>
-                <CardContent className="p-6 space-y-4">
-                  <div>
-                    <h4 className="font-medium text-indigo-900 mb-1">Резюме</h4>
-                    <p className="text-slate-700 leading-relaxed">{aiAnalysis.summary}</p>
-                  </div>
-                  <div className="grid md:grid-cols-2 gap-4 mt-4">
-                    <div className="bg-indigo-50 p-4 rounded-lg">
-                      <h4 className="font-medium text-indigo-900 mb-2">Рекомендации</h4>
-                      <ul className="space-y-2">
-                        {aiAnalysis.recommendations.map((rec, idx) => (
-                          <li key={idx} className="flex items-start text-sm text-indigo-900">
-                             <span className="mr-2">•</span> {rec}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Charts Row */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-               <Card>
-                 <CardHeader>
-                   <CardTitle>Структура по статусам</CardTitle>
-                 </CardHeader>
-                 <CardContent>
-                    <StatusDistributionChart data={reportData.items} />
-                 </CardContent>
-               </Card>
-               <Card>
-                 <CardHeader>
-                   <CardTitle>Стоимость по категориям</CardTitle>
-                 </CardHeader>
-                 <CardContent>
-                    <CategoryValueChart data={reportData.items} />
-                 </CardContent>
-               </Card>
-            </div>
-
-            {/* Data Table */}
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between">
-                <div>
-                  <CardTitle>Детализация</CardTitle>
-                  <CardDescription>Полный список позиций вошедших в отчет</CardDescription>
-                </div>
-                <div className="flex space-x-2">
-                   <Button variant="outline" size="sm">
-                     <Share2 className="mr-2 h-4 w-4" /> Поделиться
-                   </Button>
-                   <Button variant="outline" size="sm">
-                     <Download className="mr-2 h-4 w-4" /> Экспорт CSV
-                   </Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="rounded-md border overflow-hidden">
-                  <table className="w-full text-sm text-left">
-                    <thead className="bg-slate-50 text-slate-500 font-medium border-b">
-                      <tr>
-                        <th className="px-4 py-3">Товар</th>
-                        <th className="px-4 py-3">Категория</th>
-                        <th className="px-4 py-3 text-right">Количество</th>
-                        <th className="px-4 py-3 text-right">Стоимость</th>
-                        <th className="px-4 py-3">Статус</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {reportData.items.map((item) => (
-                        <tr key={item.id} className="hover:bg-slate-50/50">
-                          <td className="px-4 py-3 font-medium text-slate-900">
-                            <div>{item.name}</div>
-                            <div className="text-xs text-slate-400">{item.sku}</div>
-                          </td>
-                          <td className="px-4 py-3 text-slate-600">{item.category}</td>
-                          <td className="px-4 py-3 text-right text-slate-900">{item.quantity} шт.</td>
-                          <td className="px-4 py-3 text-right text-slate-900">${item.value}</td>
-                          <td className="px-4 py-3">
-                            <Badge variant={
-                              item.status === 'In Stock' ? 'success' : 
-                              item.status === 'Low Stock' ? 'warning' : 
-                              item.status === 'Out of Stock' ? 'destructive' : 'default'
-                            }>
-                              {item.status}
-                            </Badge>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-
-          </div>
-        )}
-      </div>
-    );
+  const handleMovement = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await postMovement(movement);
+    await loadItems();
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
-      {/* Navbar */}
-      <header className="sticky top-0 z-30 flex h-16 items-center gap-4 border-b bg-white px-6 shadow-sm">
-        <div className="flex items-center gap-2 font-bold text-xl text-blue-600">
-          <Box className="h-8 w-8" />
-          <span>Sklad.AI</span>
-        </div>
-        <nav className="hidden md:flex items-center gap-6 ml-6 text-sm font-medium text-slate-600">
-          <a href="#" className="text-blue-600">Отчеты</a>
-          <a href="#" className="hover:text-slate-900">Товары</a>
-          <a href="#" className="hover:text-slate-900">Заказы</a>
-          <a href="#" className="hover:text-slate-900">Настройки</a>
-        </nav>
-        <div className="ml-auto flex items-center gap-4">
-           <div className="relative hidden sm:block">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
-              <input 
-                type="text" 
-                placeholder="Поиск..." 
-                className="h-9 w-64 rounded-md border border-slate-200 bg-slate-50 pl-9 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-           </div>
-           <div className="h-8 w-8 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center font-bold text-xs">
-             AD
-           </div>
-        </div>
-      </header>
+    <main style={{ maxWidth: 1100, margin: '0 auto', padding: 24, fontFamily: 'Inter, Arial, sans-serif' }}>
+      <h1 style={{ marginBottom: 8 }}>Складской UI (React)</h1>
+      <p style={{ marginTop: 0, color: '#475569' }}>
+        Пример панели управления складом для backend на Java Spring + gRPC.
+      </p>
 
-      {/* Main Content */}
-      <main className="flex-1 container mx-auto p-6 md:p-8 max-w-7xl">
-        {selectedReport ? renderReportView() : renderDashboard()}
-      </main>
-    </div>
+      <section style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, marginBottom: 18 }}>
+        <StatCard title="Всего SKU" value={String(items.length)} />
+        <StatCard title="Общий остаток" value={String(totals.totalQty)} />
+        <StatCard title="Риски" value={`${totals.lowCount + totals.outCount} позиций`} />
+      </section>
+
+      <section style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
+        <form onSubmit={handleCreateItem} style={panelStyle}>
+          <h3>Добавить товар</h3>
+          <Input label="SKU" value={newItem.sku} onChange={(value) => setNewItem({ ...newItem, sku: value })} required />
+          <Input label="Название" value={newItem.name} onChange={(value) => setNewItem({ ...newItem, name: value })} required />
+          <Input label="Категория" value={newItem.category} onChange={(value) => setNewItem({ ...newItem, category: value })} />
+          <Input label="Локация" value={newItem.location} onChange={(value) => setNewItem({ ...newItem, location: value })} />
+          <Input
+            label="Мин. остаток"
+            type="number"
+            value={String(newItem.minThreshold)}
+            onChange={(value) => setNewItem({ ...newItem, minThreshold: Number(value) })}
+          />
+          <Input
+            label="Начальный остаток"
+            type="number"
+            value={String(newItem.quantity)}
+            onChange={(value) => setNewItem({ ...newItem, quantity: Number(value) })}
+          />
+          <button type="submit">Создать</button>
+        </form>
+
+        <form onSubmit={handleMovement} style={panelStyle}>
+          <h3>Движение товара</h3>
+          <label style={labelStyle}>
+            Товар
+            <select
+              value={movement.itemId}
+              onChange={(event) => setMovement({ ...movement, itemId: event.target.value })}
+              style={inputStyle}
+            >
+              {items.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name} ({item.sku})
+                </option>
+              ))}
+            </select>
+          </label>
+          <Input
+            label="Изменение (+/-)"
+            type="number"
+            value={String(movement.delta)}
+            onChange={(value) => setMovement({ ...movement, delta: Number(value) })}
+          />
+          <Input label="Причина" value={movement.reason} onChange={(value) => setMovement({ ...movement, reason: value })} />
+          <button type="submit">Применить</button>
+        </form>
+      </section>
+
+      <section style={panelStyle}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+          <h3 style={{ margin: 0 }}>Остатки</h3>
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Поиск по SKU/названию"
+            style={{ ...inputStyle, width: 260 }}
+          />
+        </div>
+
+        {loading && <p>Загрузка...</p>}
+        {error && <p style={{ color: '#b91c1c' }}>{error}</p>}
+
+        {!loading && (
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                {['SKU', 'Наименование', 'Категория', 'Локация', 'Остаток', 'Статус', 'Обновлено'].map((head) => (
+                  <th key={head} style={thStyle}>{head}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredItems.map((item) => {
+                const status = getStatus(item);
+                return (
+                  <tr key={item.id}>
+                    <td style={tdStyle}>{item.sku}</td>
+                    <td style={tdStyle}>{item.name}</td>
+                    <td style={tdStyle}>{item.category}</td>
+                    <td style={tdStyle}>{item.location}</td>
+                    <td style={tdStyle}>{item.quantity}</td>
+                    <td style={tdStyle}>
+                      <span style={{ padding: '2px 8px', borderRadius: 8, background: status === 'OK' ? '#dcfce7' : status === 'LOW' ? '#fef3c7' : '#fee2e2' }}>
+                        {statusLabel[status]}
+                      </span>
+                    </td>
+                    <td style={tdStyle}>{new Date(item.updatedAt).toLocaleString('ru-RU')}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </section>
+    </main>
   );
+};
+
+const StatCard = ({ title, value }: { title: string; value: string }) => (
+  <article style={{ ...panelStyle, padding: 16 }}>
+    <div style={{ color: '#64748b', fontSize: 13 }}>{title}</div>
+    <div style={{ fontSize: 26, fontWeight: 700 }}>{value}</div>
+  </article>
+);
+
+const Input = ({ label, value, onChange, required, type = 'text' }: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  required?: boolean;
+  type?: string;
+}) => (
+  <label style={labelStyle}>
+    {label}
+    <input type={type} value={value} required={required} onChange={(event) => onChange(event.target.value)} style={inputStyle} />
+  </label>
+);
+
+const panelStyle: React.CSSProperties = {
+  border: '1px solid #e2e8f0',
+  borderRadius: 12,
+  padding: 14,
+  background: '#fff'
+};
+
+const labelStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 5,
+  marginBottom: 10,
+  fontSize: 14
+};
+
+const inputStyle: React.CSSProperties = {
+  border: '1px solid #cbd5e1',
+  borderRadius: 8,
+  padding: '8px 10px'
+};
+
+const thStyle: React.CSSProperties = {
+  textAlign: 'left',
+  fontWeight: 600,
+  color: '#334155',
+  borderBottom: '1px solid #e2e8f0',
+  padding: 8,
+  fontSize: 13
+};
+
+const tdStyle: React.CSSProperties = {
+  borderBottom: '1px solid #f1f5f9',
+  padding: 8,
+  fontSize: 14
 };
 
 export default App;

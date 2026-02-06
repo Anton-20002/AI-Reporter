@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.example.warehouse.proto";
+option java_outer_classname = "WarehouseProto";
+
+service WarehouseService {
+  rpc GetItems (GetItemsRequest) returns (GetItemsResponse);
+  rpc CreateItem (CreateItemRequest) returns (WarehouseItem);
+  rpc RegisterMovement (RegisterMovementRequest) returns (WarehouseItem);
+}
+
+message GetItemsRequest {}
+
+message GetItemsResponse {
+  repeated WarehouseItem items = 1;
+}
+
+message WarehouseItem {
+  string id = 1;
+  string sku = 2;
+  string name = 3;
+  string category = 4;
+  int32 quantity = 5;
+  int32 minThreshold = 6;
+  string location = 7;
+  string updatedAt = 8;
+}
+
+message CreateItemRequest {
+  string sku = 1;
+  string name = 2;
+  string category = 3;
+  int32 quantity = 4;
+  int32 minThreshold = 5;
+  string location = 6;
+}
+
+message RegisterMovementRequest {
+  string itemId = 1;
+  int32 delta = 2;
+  string reason = 3;
+}
