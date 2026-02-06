@@ -1,20 +1,44 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Warehouse UI + Java Spring gRPC backend
 
-# Run and deploy your AI Studio app
+Пример приложения для управления складом:
+- **Frontend:** React + Vite (`/`)
+- **Backend:** Java Spring Boot + gRPC (`/backend`)
 
-This contains everything you need to run your app locally.
+## Что реализовано
 
-View your app in AI Studio: https://ai.studio/apps/drive/1KupGxS7dXjkw2yzWSjW_HSZrgzCu0-fT
+### UI (React)
+- таблица остатков с поиском;
+- добавление новой номенклатуры;
+- регистрация движения (`+/-`) по товару;
+- индикаторы риска (низкий/нулевой остаток);
+- fallback-режим: если backend недоступен, UI работает на локальных данных.
 
-## Run Locally
+### Backend (Spring + gRPC)
+- gRPC сервис `WarehouseService`:
+  - `GetItems`
+  - `CreateItem`
+  - `RegisterMovement`
+- REST-адаптер `/api/*` для веб-клиента:
+  - `GET /api/items`
+  - `POST /api/items`
+  - `POST /api/movements`
+- In-memory хранилище для демо.
 
-**Prerequisites:**  Node.js
+## Запуск
 
+### 1) Frontend
+```bash
+npm install
+npm run dev
+```
+UI будет доступен на `http://localhost:5173`.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+### 2) Backend
+```bash
+cd backend
+mvn spring-boot:run
+```
+Backend поднимется на `http://localhost:8080`, gRPC на порту `9090`.
+
+## gRPC контракт
+См. файл: `backend/src/main/proto/warehouse.proto`.
