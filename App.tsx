@@ -1,205 +1,102 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { createItem, getItems, postMovement } from './services/warehouseApi';
+import React, { useMemo, useState } from 'react';
+import { discoverIstioRoutes } from './services/istioApi';
 
-export type StockStatus = 'OK' | 'LOW' | 'OUT';
-
-export interface WarehouseItem {
-  id: string;
-  sku: string;
-  name: string;
-  category: string;
-  quantity: number;
-  minThreshold: number;
-  location: string;
-  updatedAt: string;
+interface RouteItem {
+  namespace: string;
+  service: string;
+  host: string;
+  port: number;
+  protocol: string;
+  gateway: string;
+  path: string;
+  source: string;
+  internal: boolean;
 }
 
-const statusLabel: Record<StockStatus, string> = {
-  OK: 'В наличии',
-  LOW: 'Низкий остаток',
-  OUT: 'Нет в наличии'
-};
-
-const getStatus = (item: WarehouseItem): StockStatus => {
-  if (item.quantity <= 0) return 'OUT';
-  if (item.quantity <= item.minThreshold) return 'LOW';
-  return 'OK';
-};
-
 const App: React.FC = () => {
-  const [items, setItems] = useState<WarehouseItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>('');
-  const [search, setSearch] = useState('');
+  const [namespace, setNamespace] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [routes, setRoutes] = useState<RouteItem[]>([]);
 
-  const [newItem, setNewItem] = useState({
-    sku: '',
-    name: '',
-    category: 'Электроника',
-    quantity: 0,
-    minThreshold: 10,
-    location: 'A-01'
-  });
+  const externalRoutes = useMemo(() => routes.filter((route) => !route.internal), [routes]);
+  const internalRoutes = useMemo(() => routes.filter((route) => route.internal), [routes]);
 
-  const [movement, setMovement] = useState({
-    itemId: '',
-    delta: 0,
-    reason: 'Поступление'
-  });
+  const handleDiscover = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    setError('');
 
-  const loadItems = async () => {
     try {
-      setLoading(true);
-      setError('');
-      const data = await getItems();
-      setItems(data);
-      if (data.length && !movement.itemId) {
-        setMovement((prev) => ({ ...prev, itemId: data[0].id }));
-      }
+      const data = await discoverIstioRoutes(namespace.trim() || undefined);
+      setRoutes(data);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Не удалось загрузить товары');
+      setError(e instanceof Error ? e.message : 'Не удалось определить роуты');
+      setRoutes([]);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    loadItems();
-  }, []);
-
-  const filteredItems = useMemo(
-    () =>
-      items.filter((item) => {
-        const text = `${item.name} ${item.sku} ${item.category}`.toLowerCase();
-        return text.includes(search.toLowerCase());
-      }),
-    [items, search]
-  );
-
-  const totals = useMemo(() => {
-    const totalQty = items.reduce((sum, item) => sum + item.quantity, 0);
-    const lowCount = items.filter((item) => getStatus(item) === 'LOW').length;
-    const outCount = items.filter((item) => getStatus(item) === 'OUT').length;
-    return { totalQty, lowCount, outCount };
-  }, [items]);
-
-  const handleCreateItem = async (event: React.FormEvent) => {
-    event.preventDefault();
-    await createItem(newItem);
-    setNewItem({ ...newItem, sku: '', name: '', quantity: 0 });
-    await loadItems();
-  };
-
-  const handleMovement = async (event: React.FormEvent) => {
-    event.preventDefault();
-    await postMovement(movement);
-    await loadItems();
-  };
-
   return (
-    <main style={{ maxWidth: 1100, margin: '0 auto', padding: 24, fontFamily: 'Inter, Arial, sans-serif' }}>
-      <h1 style={{ marginBottom: 8 }}>Складской UI (React)</h1>
+    <main style={{ maxWidth: 1200, margin: '0 auto', padding: 24, fontFamily: 'Inter, Arial, sans-serif' }}>
+      <h1 style={{ marginBottom: 8 }}>Istio Route Detector</h1>
       <p style={{ marginTop: 0, color: '#475569' }}>
-        Пример панели управления складом для backend на Java Spring + gRPC.
+        Приложение определяет роуты сервисов, запущенных в Kubernetes + Istio, через данные из <code>kubectl</code>.
       </p>
 
-      <section style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, marginBottom: 18 }}>
-        <StatCard title="Всего SKU" value={String(items.length)} />
-        <StatCard title="Общий остаток" value={String(totals.totalQty)} />
-        <StatCard title="Риски" value={`${totals.lowCount + totals.outCount} позиций`} />
-      </section>
-
-      <section style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
-        <form onSubmit={handleCreateItem} style={panelStyle}>
-          <h3>Добавить товар</h3>
-          <Input label="SKU" value={newItem.sku} onChange={(value) => setNewItem({ ...newItem, sku: value })} required />
-          <Input label="Название" value={newItem.name} onChange={(value) => setNewItem({ ...newItem, name: value })} required />
-          <Input label="Категория" value={newItem.category} onChange={(value) => setNewItem({ ...newItem, category: value })} />
-          <Input label="Локация" value={newItem.location} onChange={(value) => setNewItem({ ...newItem, location: value })} />
-          <Input
-            label="Мин. остаток"
-            type="number"
-            value={String(newItem.minThreshold)}
-            onChange={(value) => setNewItem({ ...newItem, minThreshold: Number(value) })}
-          />
-          <Input
-            label="Начальный остаток"
-            type="number"
-            value={String(newItem.quantity)}
-            onChange={(value) => setNewItem({ ...newItem, quantity: Number(value) })}
-          />
-          <button type="submit">Создать</button>
-        </form>
-
-        <form onSubmit={handleMovement} style={panelStyle}>
-          <h3>Движение товара</h3>
+      <section style={{ ...panelStyle, marginBottom: 16 }}>
+        <form onSubmit={handleDiscover} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, alignItems: 'end' }}>
           <label style={labelStyle}>
-            Товар
-            <select
-              value={movement.itemId}
-              onChange={(event) => setMovement({ ...movement, itemId: event.target.value })}
+            Namespace (необязательно)
+            <input
+              value={namespace}
+              onChange={(event) => setNamespace(event.target.value)}
+              placeholder="Например: default"
               style={inputStyle}
-            >
-              {items.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name} ({item.sku})
-                </option>
-              ))}
-            </select>
+            />
           </label>
-          <Input
-            label="Изменение (+/-)"
-            type="number"
-            value={String(movement.delta)}
-            onChange={(value) => setMovement({ ...movement, delta: Number(value) })}
-          />
-          <Input label="Причина" value={movement.reason} onChange={(value) => setMovement({ ...movement, reason: value })} />
-          <button type="submit">Применить</button>
+          <button type="submit" style={buttonStyle} disabled={loading}>
+            {loading ? 'Сканирование...' : 'Определить роуты'}
+          </button>
         </form>
       </section>
+
+      <section style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, marginBottom: 16 }}>
+        <StatCard title="Всего роутов" value={String(routes.length)} />
+        <StatCard title="Внешние" value={String(externalRoutes.length)} />
+        <StatCard title="Внутренние" value={String(internalRoutes.length)} />
+      </section>
+
+      {error && <p style={{ color: '#b91c1c' }}>{error}</p>}
 
       <section style={panelStyle}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-          <h3 style={{ margin: 0 }}>Остатки</h3>
-          <input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Поиск по SKU/названию"
-            style={{ ...inputStyle, width: 260 }}
-          />
-        </div>
+        <h3 style={{ marginTop: 0 }}>Обнаруженные маршруты</h3>
+        {!routes.length && !loading && <p style={{ color: '#64748b' }}>Роуты пока не загружены.</p>}
 
-        {loading && <p>Загрузка...</p>}
-        {error && <p style={{ color: '#b91c1c' }}>{error}</p>}
-
-        {!loading && (
+        {!!routes.length && (
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                {['SKU', 'Наименование', 'Категория', 'Локация', 'Остаток', 'Статус', 'Обновлено'].map((head) => (
+                {['Namespace', 'Service', 'Host', 'Path', 'Gateway', 'Port', 'Protocol', 'Тип', 'Источник'].map((head) => (
                   <th key={head} style={thStyle}>{head}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filteredItems.map((item) => {
-                const status = getStatus(item);
-                return (
-                  <tr key={item.id}>
-                    <td style={tdStyle}>{item.sku}</td>
-                    <td style={tdStyle}>{item.name}</td>
-                    <td style={tdStyle}>{item.category}</td>
-                    <td style={tdStyle}>{item.location}</td>
-                    <td style={tdStyle}>{item.quantity}</td>
-                    <td style={tdStyle}>
-                      <span style={{ padding: '2px 8px', borderRadius: 8, background: status === 'OK' ? '#dcfce7' : status === 'LOW' ? '#fef3c7' : '#fee2e2' }}>
-                        {statusLabel[status]}
-                      </span>
-                    </td>
-                    <td style={tdStyle}>{new Date(item.updatedAt).toLocaleString('ru-RU')}</td>
-                  </tr>
-                );
-              })}
+              {routes.map((route, index) => (
+                <tr key={`${route.namespace}-${route.service}-${route.host}-${route.path}-${index}`}>
+                  <td style={tdStyle}>{route.namespace}</td>
+                  <td style={tdStyle}>{route.service}</td>
+                  <td style={tdStyle}>{route.host}</td>
+                  <td style={tdStyle}>{route.path}</td>
+                  <td style={tdStyle}>{route.gateway}</td>
+                  <td style={tdStyle}>{route.port}</td>
+                  <td style={tdStyle}>{route.protocol}</td>
+                  <td style={tdStyle}>{route.internal ? 'Internal' : 'External'}</td>
+                  <td style={tdStyle}>{route.source}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}
@@ -215,19 +112,6 @@ const StatCard = ({ title, value }: { title: string; value: string }) => (
   </article>
 );
 
-const Input = ({ label, value, onChange, required, type = 'text' }: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  required?: boolean;
-  type?: string;
-}) => (
-  <label style={labelStyle}>
-    {label}
-    <input type={type} value={value} required={required} onChange={(event) => onChange(event.target.value)} style={inputStyle} />
-  </label>
-);
-
 const panelStyle: React.CSSProperties = {
   border: '1px solid #e2e8f0',
   borderRadius: 12,
@@ -237,8 +121,7 @@ const panelStyle: React.CSSProperties = {
 
 const labelStyle: React.CSSProperties = {
   display: 'grid',
-  gap: 5,
-  marginBottom: 10,
+  gap: 6,
   fontSize: 14
 };
 
@@ -246,6 +129,15 @@ const inputStyle: React.CSSProperties = {
   border: '1px solid #cbd5e1',
   borderRadius: 8,
   padding: '8px 10px'
+};
+
+const buttonStyle: React.CSSProperties = {
+  border: 'none',
+  background: '#0f172a',
+  color: '#fff',
+  borderRadius: 8,
+  padding: '10px 16px',
+  cursor: 'pointer'
 };
 
 const thStyle: React.CSSProperties = {
